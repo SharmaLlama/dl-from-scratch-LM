@@ -1,0 +1,42 @@
+# Base config — shared defaults for all experiments.
+# Override any field in a per-experiment config.
+
+model:
+  attention_type: vanilla
+  pe_type: sinusoidal
+  n_layers: 6
+  n_heads: 8
+  d_model: 512
+  d_ff: 2048
+  vocab_size: 50257
+  max_seq_len: 1024
+  dropout: 0.1
+  pre_norm: true
+  ffn_type: relu
+  attention_kwargs: {}
+
+training:
+  max_tokens: 10_000_000_000    # 10B tokens (full FineWebEdu sample)
+  batch_size: 32
+  lr: 3.0e-4
+  warmup_steps: 4000
+  eval_interval: 500_000_000    # eval every 500M tokens
+  checkpoint_interval: 1_000_000_000
+  weight_decay: 0.1
+  grad_clip: 1.0
+  label_smoothing: 0.1
+  seed: 42
+
+data:
+  dataset_path: data/
+  tokenizer_path: tokenizer/
+  train_ratio: 0.9
+  num_workers: 4
+
+wandb:
+  project: dl-from-scratch-lm
+  run_name: base
+  tags: []
+  log_every_steps: 50
+  log_attention_every: 200
+  watch_model: true

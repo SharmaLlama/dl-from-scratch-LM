@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dl-from-scratch-lm"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "torch>=2.2.0",
+    "wandb>=0.16.0",
+    "dash>=2.14.0",
+    "plotly>=5.18.0",
+    "numpy>=1.26.0",
+    "pandas>=2.1.0",
+    "nvidia-ml-py>=11.5.0",
+    "pyyaml>=6.0.1",
+    "matplotlib>=3.8.0",
+    "tiktoken>=0.6.0",
+    "datasets>=2.18.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["core*", "training*", "utils*", "papers*"]

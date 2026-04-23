@@ -1,0 +1,1 @@
+{"train/grad_norm":1.379140853881836,"train/perplexity":35552.79560223753,"train/tokens_seen":43008,"train/lr":6.299999999999999e-05,"train/loss":10.478774070739746,"_timestamp":1.776838784717831e+09,"_runtime":31.339433796,"train/tokens_per_second":1441.6212192434814,"_wandb":{"runtime":31},"_step":42}
