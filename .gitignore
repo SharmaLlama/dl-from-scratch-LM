@@ -4,6 +4,7 @@
 .env
 data/fineweb_cache/
 experiments/
+wandb/
 
 
 dl_from_scratch_lm.egg-info/
