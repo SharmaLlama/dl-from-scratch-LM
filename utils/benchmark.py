@@ -1,6 +1,10 @@
 """
 GPU benchmarking: forward-pass latency, memory usage, and throughput
 across a grid of batch sizes and sequence lengths.
+
+Also provides lightweight hardware monitoring functions (NVML-based memory,
+throttle detection, MFU, inter-GPU bandwidth) intended to be called inside
+the training loop.
 """
 
 from __future__ import annotations
@@ -10,10 +14,16 @@ import logging
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import torch
 import torch.nn as nn
+
+try:
+    import pynvml
+    _NVML_AVAILABLE = True
+except ImportError:
+    _NVML_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -142,3 +152,87 @@ class ModelBenchmarker:
             writer = csv.DictWriter(f, fieldnames=list(asdict(results[0]).keys()))
             writer.writeheader()
             writer.writerows(asdict(r) for r in results)
+
+
+
+PEAK_FLOPS_DEFAULT = 25e12
+
+
+def init_nvml_handle(rank: int) -> Optional[Any]:
+    """
+    Initialize NVML and return a device handle for `rank`.
+    Returns None if pynvml is not installed or NVML init fails.
+    """
+    if not _NVML_AVAILABLE:
+        return None
+    try:
+        pynvml.nvmlInit()
+        return pynvml.nvmlDeviceGetHandleByIndex(rank)
+    except Exception:
+        return None
+
+
+def get_memory_stats(rank: int) -> dict[str, float]:
+    """VRAM allocation, reservation, fragmentation, and inactive splits for `rank`."""
+    stats = torch.cuda.memory_stats(rank)
+    allocated = torch.cuda.memory_allocated(rank)
+    reserved = torch.cuda.memory_reserved(rank)
+    return {
+        f"hw/vram_allocated_gb": allocated / 1e9,
+        f"hw/vram_reserved_gb": reserved / 1e9,
+        f"hw/fragmentation_b": (reserved - allocated) / reserved if reserved > 0 else 0.0,
+        f"hw/inactive_split_gb": stats.get("inactive_split_bytes.all.current", 0) / 1e9,
+    }
+
+
+def get_throttle_reasons(handle: Optional[Any]) -> list[str]:
+    """Returns active GPU throttle reason strings, or [] if none / NVML unavailable."""
+    if handle is None or not _NVML_AVAILABLE:
+        return []
+    try:
+        reasons = pynvml.nvmlDeviceGetCurrentClocksThrottleReasons(handle)
+        reason_map = {0x01: "Power", 0x02: "Thermal", 0x04: "Voltage", 0x08: "OS", 0x10: "Sync"}
+        active = [v for k, v in reason_map.items() if reasons & k]
+        return active if active else []
+    except Exception:
+        return []
+
+
+def calculate_mfu(
+    num_params: int,
+    tokens_per_step: int,
+    step_time: float,
+    peak_flops: float = PEAK_FLOPS_DEFAULT,
+) -> float:
+    """
+    Model FLOPs Utilization (MFU).
+    Uses the 6·P·T approximation for a forward+backward pass.
+    Returns 0.0 if step_time is zero.
+    """
+    if step_time <= 0:
+        return 0.0
+    flops_achieved = (6 * num_params * tokens_per_step) / step_time
+    return flops_achieved / peak_flops
+
+
+def measure_inter_gpu_bandwidth(rank: int, world_size: int, tensor_size_mb: int = 100) -> float:
+    """
+    Measures effective All-Reduce bandwidth in GB/s.
+    Returns 0.0 on single-GPU setups.
+    """
+    if world_size < 2:
+        return 0.0
+    num_el = (tensor_size_mb * 1024 * 1024) // 4
+    tensor = torch.randn(num_el, device=f"cuda:{rank}")
+
+    # warmup
+    torch.distributed.all_reduce(tensor)
+    torch.cuda.synchronize()
+
+    start = time.perf_counter()
+    for _ in range(10):
+        torch.distributed.all_reduce(tensor)
+    torch.cuda.synchronize()
+
+    avg_time = (time.perf_counter() - start) / 10
+    return (tensor_size_mb / 1024) / avg_time  # GB/s

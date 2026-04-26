@@ -28,10 +28,8 @@ class WandBLogger:
                 tags=cfg.tags,
                 config=config_dict,
             )
-            # Use tokens_seen as the x-axis for all metric groups.
-            # WandB still needs an integer step internally; tokens_seen becomes the display axis.
             wandb.define_metric("tokens_seen")
-            for prefix in ("train/*", "val/*", "attn/*"):
+            for prefix in ("train/*", "val/*", "attn/*", "hw/*"):
                 wandb.define_metric(prefix, step_metric="tokens_seen")
 
     def watch_model(self, model: nn.Module) -> None:

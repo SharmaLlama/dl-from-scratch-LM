@@ -1,30 +1,32 @@
-
 model:
-  attention_type: vanilla
+  attention_type: big_bird
   pe_type: sinusoidal
   n_layers: 4
   n_heads: 4
   d_model: 256
   d_ff: 1024
   vocab_size: 50257
-  max_seq_len: 1024
+  max_seq_len: 256
   dropout: 0.1
   pre_norm: true
   ffn_type: relu
-  attention_kwargs: {}
+  attention_kwargs:
+    global_tokens: 1
+    window_tokens: 3
+    random_tokens: 2
 
 training:
   max_tokens: 20_000_000       # 100M tokens
-  batch_size: 12
+  batch_size: 32
   lr: 3.0e-4
   warmup_steps: 200
-  eval_interval: 1_000_000     # eval every 10M tokens
+  eval_interval: 500_000     # eval every 10M tokens
   checkpoint_interval: 10_000_000
   weight_decay: 0.1
   grad_clip: 1.0
   label_smoothing: 0.0
   seed: 42
-  max_eval_tokens: 250_000
+  max_eval_tokens: 500_000
   grad_accum_steps: 4
   mixed_precision: true
 
@@ -36,8 +38,8 @@ data:
 
 wandb:
   project: dl-from-scratch-lm
-  run_name: vanilla-small
-  tags: [vanilla, sinusoidal, small, debug]
+  run_name: big_bird-small
+  tags: [big_bird, sinusoidal, small, debug]
   log_every_steps: 10
   log_attention_every: 500
   watch_model: false

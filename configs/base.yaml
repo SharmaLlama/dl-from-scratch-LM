@@ -26,6 +26,8 @@ training:
   grad_clip: 1.0
   label_smoothing: 0.1
   seed: 42
+  grad_accum_steps: 4
+  mixed_precision: true
 
 data:
   dataset_path: data/

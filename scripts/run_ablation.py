@@ -51,6 +51,8 @@ def main() -> None:
         batch_size=cfg.training.batch_size,
         train_ratio=cfg.data.train_ratio,
         num_workers=cfg.data.num_workers,
+        n_shards=args.n_shards,
+
     )
 
     output = args.output or f"experiments/{cfg.model.attention_type}/ablation.json"

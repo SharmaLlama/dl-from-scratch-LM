@@ -15,6 +15,7 @@ from core.model.decoder_block import DecoderBlock
 from core.model.language_model import LanguageModel
 from core.positional_encoding.base import BasePositionalEncoding, LearnedPE, SinusoidalPE
 from papers.vanilla_attention.attention import VanillaMultiHeadAttention
+from papers.big_bird.attention import SparseMultiHeadAttention
 from training.configs.schemas import ExperimentConfig
 
 # ── Registries ────────────────────────────────────────────────────────────────
@@ -22,9 +23,9 @@ from training.configs.schemas import ExperimentConfig
 
 _ATTENTION_REGISTRY: dict[str, type[BaseMultiHeadAttention]] = {
     "vanilla": VanillaMultiHeadAttention,
-    # "rope":          RoPEMultiHeadAttention,      # add when papers/rope/attention.py is done
+    # "rope":          RoPEMultiHeadAttention,
     # "alibi":         ALiBiAttention,
-    # "big_bird":      SparseMultiHeadAttention,
+    "big_bird":      SparseMultiHeadAttention,
     # "performer":     PerformerAttention,
     # "flash":         FlashAttention,
     # "nope":          NoPEAttention,

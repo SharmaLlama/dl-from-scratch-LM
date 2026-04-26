@@ -4,11 +4,9 @@ Data pipeline for FineWebEdu (HuggingFaceFW/fineweb-edu, sample-10BT).
 Flow:
   1. Stream documents from HF Hub
   2. Tokenise with tiktoken (gpt2 encoding, ~50k vocab)
-  3. Pack tokens into fixed-length chunks — no padding, no waste
+  3. Pack tokens into fixed-length chunks
   4. Cache shards to disk as .pt files so subsequent runs skip re-tokenisation
   5. Return standard DataLoaders (with DistributedSampler for DDP)
-
-Vocab note: tiktoken gpt2 has 50,257 tokens. Make sure model.vocab_size matches.
 """
 
 from __future__ import annotations
@@ -117,14 +115,14 @@ def build_fineweb_cache(
     return cache_path
 
 
-def load_cached_shards(cache_dir: str) -> torch.Tensor:
+def load_cached_shards(cache_dir: str, n_shards: int) -> torch.Tensor:
     """Load all cached shards and concatenate into a single flat token tensor."""
-    shard_files = sorted(Path(cache_dir).glob("shard_*.pt"))
+    shard_files = sorted(Path(cache_dir).glob("shard_*.pt"))[:n_shards]
     if not shard_files:
         raise FileNotFoundError(
             f"No shards found in {cache_dir}. Run build_fineweb_cache() first."
         )
-    logger.info(f"Loading {len(shard_files)} shards from {cache_dir}")
+    logger.info(f"Loading {n_shards} shards from {cache_dir}")
     return torch.cat([torch.load(f, weights_only=True) for f in shard_files])
 
 
@@ -136,6 +134,7 @@ def get_dataloaders(
     num_workers: int = 4,
     rank: int = 0,
     world_size: int = 1,
+    n_shards: int = 100,
 ) -> tuple[DataLoader, DataLoader]:
     """
     Load tokenised FineWebEdu shards and return train/val DataLoaders.
@@ -148,8 +147,9 @@ def get_dataloaders(
         num_workers: DataLoader workers
         rank: DDP rank (0 for single-GPU)
         world_size: total DDP processes (1 for single-GPU)
+        n_shards: number of shards to load
     """
-    token_ids = load_cached_shards(cache_dir)
+    token_ids = load_cached_shards(cache_dir, n_shards)
     token_ids = token_ids.long()  # CrossEntropyLoss expects long
 
     split = int(len(token_ids) * train_ratio)
@@ -170,15 +170,15 @@ def get_dataloaders(
         num_workers=num_workers,
         pin_memory=True,
         drop_last=True,
+        prefetch_factor=4,
     )
-    # num_workers=0 for val: eval is compute-bound not IO-bound, and multiprocessing
-    # workers accumulate stale state when the loop is broken early on each eval call.
     val_loader = DataLoader(
         val_ds,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=0,
+        num_workers=num_workers,
         pin_memory=True,
         drop_last=True,
+        prefetch_factor=4,
     )
     return train_loader, val_loader

@@ -72,9 +72,7 @@ class BaseMultiHeadAttention(nn.Module, ABC):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Hook called after projection/reshape, before attention_pattern().
-        Default is identity. Override to inject position information:
-          - RoPE: rotate Q and K
-          - ALiBi: store the bias tensor on self for use inside attention_pattern()
+        Default is identity. Override to inject position information
         """
         return Q, K, V
 

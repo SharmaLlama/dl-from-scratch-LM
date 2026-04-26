@@ -53,7 +53,6 @@ class HeadAblationStudy:
         self._n_heads = self._attn_layers[0].n_heads
         self._dv = self._attn_layers[0].dv
 
-    # ── Public API ────────────────────────────────────────────────────────────
 
     def head_importance_scores(self) -> pd.DataFrame:
         """
@@ -130,7 +129,6 @@ class HeadAblationStudy:
 
         return removal_order, perplexities
 
-    # ── Internals ─────────────────────────────────────────────────────────────
 
     @torch.inference_mode()
     def _eval_perplexity(self, ablated: list[tuple[int, int]]) -> float:
@@ -145,7 +143,7 @@ class HeadAblationStudy:
         for x, y in self.val_loader:
             x, y = x.to(self.device), y.to(self.device)
             seq_len = x.shape[1]
-            mask = torch.tril(torch.ones(seq_len, seq_len, device=self.device)).bool().unsqueeze(0).unsqueeze(0).expand(x.shape[0], -1, -1, -1).contiguous()
+            mask = torch.tril(torch.ones(seq_len, seq_len, device=self.device)).bool().unsqueeze(0).unsqueeze(0)
             logits = self.model(x, mask)
             loss = loss_fn(logits.view(-1, logits.size(-1)), y.view(-1))
             total_tokens += y.numel()

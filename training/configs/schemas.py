@@ -43,6 +43,8 @@ class TrainingConfig:
     label_smoothing: float = 0.0
     seed: int = 42
     max_eval_tokens: int = 5_000_000  # cap val loop — no need to eval the full val split
+    grad_accum_steps: int = 1         # accumulate gradients over N micro-batches before stepping
+    mixed_precision: bool = False     # enable AMP (torch.autocast + GradScaler)
 
 
 @dataclass

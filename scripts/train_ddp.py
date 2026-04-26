@@ -25,6 +25,9 @@ from training.wandb_logger import WandBLogger
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [rank%(process)d] %(message)s")
 logger = logging.getLogger(__name__)
 
+import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -91,7 +94,8 @@ def main() -> None:
     trainer = Trainer(
         model, optimizer, scheduler,
         train_loader, val_loader,
-        cfg.training, wandb_logger, checkpointer, device, rank=rank,
+        cfg.training, wandb_logger, checkpointer, device,
+        rank=rank, world_size=world_size,
     )
     trainer.fit()
 

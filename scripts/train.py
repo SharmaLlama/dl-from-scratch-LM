@@ -24,6 +24,8 @@ from training.wandb_logger import WandBLogger
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
+import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -50,6 +52,7 @@ def main() -> None:
         batch_size=cfg.training.batch_size,
         train_ratio=cfg.data.train_ratio,
         num_workers=cfg.data.num_workers,
+        n_shards=args.n_shards,
     )
     tokens_per_step = cfg.training.batch_size * cfg.model.max_seq_len
     total_steps = cfg.training.max_tokens // tokens_per_step
