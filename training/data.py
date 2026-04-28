@@ -6,43 +6,84 @@ Flow:
   2. Tokenise with tiktoken (gpt2 encoding, ~50k vocab)
   3. Pack tokens into fixed-length chunks
   4. Cache shards to disk as .pt files so subsequent runs skip re-tokenisation
-  5. Return standard DataLoaders (with DistributedSampler for DDP)
+  5. Return DataLoaders backed by ShardedTokenDataset, which loads
+     `shards_per_chunk` shards at a time — arbitrarily large corpora
+     can be trained on without holding everything in RAM.
 """
 
 from __future__ import annotations
 
 import logging
+import random
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterator
 
 import tiktoken
 import torch
 from datasets import load_dataset
-from torch.utils.data import DataLoader, Dataset, DistributedSampler
+from torch.utils.data import DataLoader, IterableDataset
 
 logger = logging.getLogger(__name__)
 
 EOT_TOKEN = 50256  # tiktoken gpt2 end-of-text token, used as document separator
 
 
-class PackedTokenDataset(Dataset):
+class ShardedTokenDataset(IterableDataset):
     """
-    Flat tensor of pre-tokenised ids split into non-overlapping chunks.
-    Each item is (input_ids, target_ids) where target = input shifted by 1.
+    Lazily loads pre-tokenised shards from disk in chunks of `shards_per_chunk`.
+
+    Memory at any time: `shards_per_chunk` shards (~1M tokens each by default).
+
+    For DDP, shard files are interleaved across ranks so each rank owns a
+    disjoint subset. DataLoader workers further subdivide each rank's shards,
+    so there is no duplicated data regardless of num_workers or world_size.
     """
 
-    def __init__(self, token_ids: torch.Tensor, seq_len: int) -> None:
-        self.data = token_ids
+    def __init__(
+        self,
+        shard_files: list[Path],
+        seq_len: int,
+        shards_per_chunk: int,
+        rank: int = 0,
+        world_size: int = 1,
+        shuffle: bool = True,
+    ) -> None:
+        self.local_shards = shard_files[rank::world_size]
         self.seq_len = seq_len
+        self.shards_per_chunk = shards_per_chunk
+        self.shuffle = shuffle
 
-    def __len__(self) -> int:
-        return (len(self.data) - 1) // self.seq_len
+    def __iter__(self) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
+        files = list(self.local_shards)
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        start = idx * self.seq_len
-        x = self.data[start : start + self.seq_len]
-        y = self.data[start + 1 : start + self.seq_len + 1]
-        return x, y
+        # DataLoader workers subdivide the shard list so no two workers
+        # yield the same sequences.
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info is not None:
+            files = files[worker_info.id :: worker_info.num_workers]
+
+        if self.shuffle:
+            random.shuffle(files)
+
+        for chunk_start in range(0, len(files), self.shards_per_chunk):
+            chunk = files[chunk_start : chunk_start + self.shards_per_chunk]
+            tokens = torch.cat(
+                [torch.load(f, weights_only=True) for f in chunk]
+            ).long()
+
+            n_seqs = (len(tokens) - 1) // self.seq_len
+            indices = list(range(n_seqs))
+            if self.shuffle:
+                random.shuffle(indices)
+
+            for idx in indices:
+                start = idx * self.seq_len
+                yield (
+                    tokens[start : start + self.seq_len],
+                    tokens[start + 1 : start + self.seq_len + 1],
+                )
+
+            del tokens  # release chunk memory before loading the next
 
 
 def _tokenise_shard(
@@ -115,17 +156,6 @@ def build_fineweb_cache(
     return cache_path
 
 
-def load_cached_shards(cache_dir: str, n_shards: int) -> torch.Tensor:
-    """Load all cached shards and concatenate into a single flat token tensor."""
-    shard_files = sorted(Path(cache_dir).glob("shard_*.pt"))[:n_shards]
-    if not shard_files:
-        raise FileNotFoundError(
-            f"No shards found in {cache_dir}. Run build_fineweb_cache() first."
-        )
-    logger.info(f"Loading {n_shards} shards from {cache_dir}")
-    return torch.cat([torch.load(f, weights_only=True) for f in shard_files])
-
-
 def get_dataloaders(
     cache_dir: str,
     seq_len: int,
@@ -134,51 +164,76 @@ def get_dataloaders(
     num_workers: int = 4,
     rank: int = 0,
     world_size: int = 1,
-    n_shards: int = 100,
+    shards_per_chunk: int = 100,
+    n_shards: int | None = None,
 ) -> tuple[DataLoader, DataLoader]:
     """
-    Load tokenised FineWebEdu shards and return train/val DataLoaders.
+    Build train/val DataLoaders backed by ShardedTokenDataset.
+
+    All .pt shard files found in cache_dir are used. The first
+    `train_ratio` fraction (by shard count) go to train; the rest to val.
+    Only `shards_per_chunk` shards are held in RAM at any one time per worker.
 
     Args:
-        cache_dir: directory containing shard_*.pt files from build_fineweb_cache()
-        seq_len: context window length (should match model max_seq_len)
-        batch_size: per-GPU batch size
-        train_ratio: fraction of tokens used for training
-        num_workers: DataLoader workers
-        rank: DDP rank (0 for single-GPU)
-        world_size: total DDP processes (1 for single-GPU)
-        n_shards: number of shards to load
+        cache_dir:        directory containing shard_*.pt files
+        seq_len:          context window length (should match model max_seq_len)
+        batch_size:       per-GPU batch size
+        train_ratio:      fraction of shards used for training
+        num_workers:      DataLoader workers for train (val always uses 0)
+        rank:             DDP rank (0 for single-GPU)
+        world_size:       total DDP processes (1 for single-GPU)
+        shards_per_chunk: shards loaded into RAM at once (controls peak memory)
+        n_shards: total number of shards to use
     """
-    token_ids = load_cached_shards(cache_dir, n_shards)
-    token_ids = token_ids.long()  # CrossEntropyLoss expects long
-
-    split = int(len(token_ids) * train_ratio)
-    train_ds = PackedTokenDataset(token_ids[:split], seq_len)
-    val_ds = PackedTokenDataset(token_ids[split:], seq_len)
-
-    train_sampler: Optional[DistributedSampler] = None
-    if world_size > 1:
-        train_sampler = DistributedSampler(
-            train_ds, num_replicas=world_size, rank=rank, shuffle=True
+    all_shards = sorted(Path(cache_dir).glob("shard_*.pt"))
+    if not all_shards:
+        raise FileNotFoundError(
+            f"No shards found in {cache_dir}. Run build_fineweb_cache() first."
         )
+
+    if n_shards is not None:
+        all_shards = all_shards[:n_shards]
+
+    n_train = int(len(all_shards) * train_ratio)
+    train_shards = all_shards[:n_train]
+    val_shards = all_shards[n_train:]
+
+    logger.info(
+        f"Found {len(all_shards)} shards — "
+        f"{len(train_shards)} train / {len(val_shards)} val "
+        f"(chunk size: {shards_per_chunk})"
+    )
+
+    train_ds = ShardedTokenDataset(
+        train_shards,
+        seq_len=seq_len,
+        shards_per_chunk=shards_per_chunk,
+        rank=rank,
+        world_size=world_size,
+        shuffle=True,
+    )
+    val_ds = ShardedTokenDataset(
+        val_shards,
+        seq_len=seq_len,
+        shards_per_chunk=shards_per_chunk,
+        rank=0,        # all ranks evaluate the same val shards
+        world_size=1,
+        shuffle=False,
+    )
 
     train_loader = DataLoader(
         train_ds,
         batch_size=batch_size,
-        sampler=train_sampler,
-        shuffle=(train_sampler is None),
         num_workers=num_workers,
         pin_memory=True,
         drop_last=True,
-        prefetch_factor=4,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
     val_loader = DataLoader(
         val_ds,
         batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
+        num_workers=0,   # avoids worker-state issues on repeated early-terminated iterations
         pin_memory=True,
-        drop_last=True,
-        prefetch_factor=4,
+        drop_last=False,
     )
     return train_loader, val_loader

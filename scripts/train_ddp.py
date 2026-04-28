@@ -34,7 +34,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", required=True)
     parser.add_argument("--resume", default=None)
     parser.add_argument("--cache-dir", default="data/fineweb_cache")
-    parser.add_argument("--n-shards", type=int, default=100)
+    parser.add_argument("--n-shards", type=int, default=100, help="Total shards to build/cache")
+    parser.add_argument("--shards-per-chunk", type=int, default=100, help="Shards loaded into RAM at once")
     return parser.parse_args()
 
 
@@ -62,8 +63,10 @@ def main() -> None:
         num_workers=cfg.data.num_workers,
         rank=rank,
         world_size=world_size,
+        shards_per_chunk=args.shards_per_chunk,
+        n_shards=args.n_shards,
     )
-    tokens_per_step = cfg.training.batch_size * cfg.model.max_seq_len
+    tokens_per_step = cfg.training.batch_size * cfg.model.max_seq_len * cfg.training.grad_accum_steps
     total_steps = cfg.training.max_tokens // tokens_per_step
 
     # ── Model ─────────────────────────────────────────────────────────────────
@@ -84,8 +87,9 @@ def main() -> None:
     if is_main_process(rank):
         wandb_logger.watch_model(model)
 
-    run_dir = f"experiments/{cfg.model.attention_type}/{cfg.wandb.run_name}"
-    checkpointer = CheckpointManager(run_dir, rank=rank)
+    checkpointer = CheckpointManager("experiments", cfg, rank=rank)
+    if is_main_process(rank):
+        logger.info(f"Checkpointing to {checkpointer.dir}")
 
     if args.resume:
         checkpointer.load(args.resume, model, optimizer, scheduler, device)

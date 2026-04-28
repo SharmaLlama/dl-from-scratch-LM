@@ -32,7 +32,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", required=True, help="Path to experiment YAML config")
     parser.add_argument("--resume", default=None, help="Path to checkpoint to resume from")
     parser.add_argument("--cache-dir", default="data/fineweb_cache", help="Tokenised shard cache directory")
-    parser.add_argument("--n-shards", type=int, default=100, help="Number of FineWebEdu shards to cache")
+    parser.add_argument("--n-shards", type=int, default=100, help="Total shards to build/cache")
+    parser.add_argument("--shards-per-chunk", type=int, default=100, help="Shards loaded into RAM at once")
     return parser.parse_args()
 
 
@@ -52,9 +53,9 @@ def main() -> None:
         batch_size=cfg.training.batch_size,
         train_ratio=cfg.data.train_ratio,
         num_workers=cfg.data.num_workers,
-        n_shards=args.n_shards,
+        shards_per_chunk=args.shards_per_chunk,
     )
-    tokens_per_step = cfg.training.batch_size * cfg.model.max_seq_len
+    tokens_per_step = cfg.training.batch_size * cfg.model.max_seq_len * cfg.training.grad_accum_steps
     total_steps = cfg.training.max_tokens // tokens_per_step
 
     # ── Model ─────────────────────────────────────────────────────────────────
@@ -76,8 +77,8 @@ def main() -> None:
     logger_obj = WandBLogger(cfg.wandb, config_dict=config_dict)
     logger_obj.watch_model(model)
 
-    run_dir = f"experiments/{cfg.model.attention_type}/{cfg.wandb.run_name}"
-    checkpointer = CheckpointManager(run_dir)
+    checkpointer = CheckpointManager("experiments", cfg)
+    logger.info(f"Checkpointing to {checkpointer.dir}")
 
     if args.resume:
         checkpointer.load(args.resume, model, optimizer, scheduler, device)

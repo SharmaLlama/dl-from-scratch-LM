@@ -1,4 +1,3 @@
-import itertools
 import time
 from typing import Optional
 
@@ -89,8 +88,11 @@ class Trainer:
         Evals and checkpoints are triggered by token count, not epochs.
         """
         self.model.train()
+        def _infinite_loader():
+            while True:
+                yield from self.train_loader
 
-        for x, y in itertools.cycle(self.train_loader):
+        for x, y in _infinite_loader():
             t_step = time.perf_counter()
             if self.tokens_seen >= self.cfg.max_tokens:
                 break
@@ -145,11 +147,11 @@ class Trainer:
                 self._accum_time   = 0.0
                 self._accum_tokens = 0
 
-                logger.info(
-                    f"step={self.global_step} tokens={self.tokens_seen:,} "
-                    f"loss={loss_for_log:.4f} ppl={perplexity(loss_for_log):.2f} "
-                    f"tok/s={tok_s:.0f}"
-                )
+                # logger.info(
+                #     f"step={self.global_step} tokens={self.tokens_seen:,} "
+                #     f"loss={loss_for_log:.4f} ppl={perplexity(loss_for_log):.2f} "
+                #     f"tok/s={tok_s:.0f}"
+                # )
 
                 # ── WandB logging (every log_every_steps optimizer steps) ─────
                 if self.global_step % self.logger.log_every_steps == 0:
@@ -186,19 +188,21 @@ class Trainer:
                             tokens_seen=self.tokens_seen,
                         )
 
-            # ── Eval + checkpoint triggers ────────────────────────────────────
-            if self.tokens_seen >= self._next_eval:
-                val_loss = self._eval()
-                self._next_eval += self.cfg.eval_interval
-                self.model.train()
+                # ── Eval + checkpoint triggers ────────────────────────────────
+                # Must be inside the optimizer step block so gradients are freed
+                # (zero_grad above) before eval allocates activation memory.
+                if self.tokens_seen >= self._next_eval:
+                    val_loss = self._eval()
+                    self._next_eval += self.cfg.eval_interval
+                    self.model.train()
 
-                if self.tokens_seen >= self._next_ckpt:
-                    self.checkpointer.save(
-                        self.model, self.optimizer, self.scheduler,
-                        self.global_step, val_loss,
-                        {"tokens_seen": self.tokens_seen},
-                    )
-                    self._next_ckpt += self.cfg.checkpoint_interval
+                    if self.tokens_seen >= self._next_ckpt:
+                        self.checkpointer.save(
+                            self.model, self.optimizer, self.scheduler,
+                            self.global_step, val_loss,
+                            {"tokens_seen": self.tokens_seen},
+                        )
+                        self._next_ckpt += self.cfg.checkpoint_interval
 
         # Final eval and checkpoint at end of training.
         self._eval()
