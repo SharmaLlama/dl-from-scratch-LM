@@ -12,10 +12,11 @@ model:
   pre_norm: true
   ffn_type: relu
   attention_kwargs: {}
+  gradient_checkpointing: true
 
 training:
   max_tokens: 1_000_000_000 # 1B tokens
-  batch_size: 8
+  batch_size: 12
   lr: 3.0e-4
   warmup_steps: 500
   eval_interval: 10_000_000     # eval every 10M tokens
@@ -25,9 +26,9 @@ training:
   label_smoothing: 0.0
   seed: 42 
   max_eval_tokens: 5_000_000
-  grad_accum_steps: 8
+  grad_accum_steps: 16
   mixed_precision: true
-  compile: false
+  compile: true
 
 
 data:

@@ -37,12 +37,17 @@ class VanillaMultiHeadAttention(BaseMultiHeadAttention):
         scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.dk)
 
         if mask is not None:
-            scores = scores.masked_fill(~mask, float("-inf"))
+            # In-place masked_fill_ avoids the (B, H, N, N) temp that the OOP
+            # variant allocates — meaningful at long context lengths.
+            scores.masked_fill_(~mask, float("-inf"))
 
         attn_weights = F.softmax(scores, dim=-1)
 
-        # Replace NaN from fully-masked rows (can occur at the first token position)
-        attn_weights = torch.nan_to_num(attn_weights, nan=0.0)
+        # Note: under a strict causal mask every row has at least one True
+        # (position i always attends to itself), so softmax cannot produce NaN
+        # and the previous nan_to_num call has been removed — it created a
+        # full-size fp32 copy of attn_weights every layer.
+
         attn_weights = self.attn_dropout(attn_weights)
 
         output = torch.matmul(attn_weights, V)

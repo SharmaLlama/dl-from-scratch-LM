@@ -4,7 +4,6 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from torch.amp import GradScaler
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
@@ -73,7 +72,9 @@ class Trainer:
         self._accum_time = 0.0        # wall time for the current optimizer-step window (per GPU)
         self._accum_tokens = 0        # tokens for the current optimizer-step window (per GPU)
 
-        self.scaler = GradScaler('cuda', enabled=cfg.mixed_precision)
+        # bf16 autocast on Ampere+ — same Tensor-Core throughput as fp16, but
+        # the wider exponent range removes the need for loss scaling. No GradScaler.
+        self._amp_dtype = torch.bfloat16 if cfg.mixed_precision else torch.float32
 
         self._num_params = sum(p.numel() for p in model.parameters())
         self._nvml_handle = init_nvml_handle(rank) if device.type == "cuda" else None
@@ -113,19 +114,21 @@ class Trainer:
                 sync_ctx = nullcontext()
 
             with sync_ctx:
-                with torch.autocast(device_type=self.device.type, enabled=self.cfg.mixed_precision):
+                with torch.autocast(
+                    device_type=self.device.type,
+                    dtype=self._amp_dtype,
+                    enabled=self.cfg.mixed_precision,
+                ):
                     logits = self.model(x, mask)
                     loss = self.loss_fn(logits.view(-1, logits.size(-1)), y.view(-1))
                     loss = loss / self.cfg.grad_accum_steps
 
-                self.scaler.scale(loss).backward()
+                loss.backward()
             self._accum_step += 1
 
             # CPU-side wall time. We deliberately do NOT torch.cuda.synchronize() per
             # micro-batch — that serialises the GPU queue and kills overlap with the
-            # dataloader / next forward. GradScaler.unscale_ + .step() in the optimizer
-            # branch below sync implicitly, so over a window of many micro-batches the
-            # CPU clock tracks GPU progress closely enough for tok/s and MFU averages.
+            # dataloader / next forward.
             step_time = time.perf_counter() - t_step
             self._accum_time += step_time
             self._accum_tokens += tokens_this_batch
@@ -134,10 +137,8 @@ class Trainer:
 
             # ── optimizer step ────────────────────────────────────────────────
             if self._accum_step % self.cfg.grad_accum_steps == 0:
-                self.scaler.unscale_(self.optimizer)
                 grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip)
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
+                self.optimizer.step()
                 self.optimizer.zero_grad(set_to_none=True)
                 self.scheduler.step()
                 self.global_step += 1
@@ -300,5 +301,8 @@ class Trainer:
         return mean_loss
 
     def _causal_mask(self, seq_len: int, batch_size: int) -> torch.Tensor:
-        mask = torch.tril(torch.ones(seq_len, seq_len, device=self.device)).bool()
-        return mask.unsqueeze(0).unsqueeze(0).expand(batch_size, -1, -1, -1).contiguous()
+        # Drop .contiguous() — expand returns a stride-0 view that takes only
+        # seq_len*seq_len bytes regardless of B. masked_fill broadcasts over the
+        # batch dim without needing the mask materialised B times.
+        mask = torch.tril(torch.ones(seq_len, seq_len, device=self.device, dtype=torch.bool))
+        return mask.unsqueeze(0).unsqueeze(0).expand(batch_size, -1, -1, -1)

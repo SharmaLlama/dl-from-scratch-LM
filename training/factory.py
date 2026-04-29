@@ -75,7 +75,7 @@ def build_model(cfg: ExperimentConfig) -> LanguageModel:
         for _ in range(m.n_layers)
     ]
 
-    decoder = Decoder(blocks, m.d_model)
+    decoder = Decoder(blocks, m.d_model, gradient_checkpointing=m.gradient_checkpointing)
     projection = Projection(m.d_model, m.vocab_size)
     model = LanguageModel(embedding, decoder, projection)
     model.initialise()

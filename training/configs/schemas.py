@@ -22,6 +22,7 @@ class ModelConfig:
     dk: Optional[int] = None      # defaults to d_model // n_heads
     dv: Optional[int] = None      # defaults to d_model // n_heads
     attention_kwargs: dict = field(default_factory=dict)
+    gradient_checkpointing: bool = False  # recompute decoder-block activations during backward
 
     def __post_init__(self) -> None:
         if self.dk is None:
