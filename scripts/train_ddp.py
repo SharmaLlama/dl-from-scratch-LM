@@ -28,6 +28,12 @@ logger = logging.getLogger(__name__)
 import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
+# TF32 for fp32 matmuls (Ampere+). 'high' = TF32; safe under mixed-precision training
+# since the compute-heavy paths run in bf16/fp16 anyway.
+torch.set_float32_matmul_precision("high")
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -71,11 +77,19 @@ def main() -> None:
 
     # ── Model ─────────────────────────────────────────────────────────────────
     model = build_model(cfg)
-    model = wrap_model_ddp(model, rank)
 
     if is_main_process(rank):
         n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         logger.info(f"Model parameters: {n_params:,}")
+
+    # Compile BEFORE DDP wrap (matches nanoGPT). DDP's reducer hooks then attach to
+    # the compiled module's parameters, and `model.no_sync()` stays directly on DDP.
+    if cfg.training.compile:
+        if is_main_process(rank):
+            logger.info("Compiling model with torch.compile (first step will be slow)...")
+        model = torch.compile(model)
+
+    model = wrap_model_ddp(model, rank)
 
     # ── Optimiser + scheduler ─────────────────────────────────────────────────
     optimizer = get_optimizer(model, cfg.training)

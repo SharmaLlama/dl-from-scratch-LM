@@ -35,7 +35,14 @@ def wrap_model_ddp(model: nn.Module, rank: int) -> DDP:
 
 
 def unwrap_model(model: nn.Module) -> nn.Module:
-    """Strip DDP or DataParallel wrapper for checkpointing."""
-    if isinstance(model, (DDP, nn.DataParallel)):
-        return model.module
+    """Strip DDP, DataParallel, and torch.compile wrappers for checkpointing."""
+    while True:
+        if isinstance(model, (DDP, nn.DataParallel)):
+            model = model.module
+            continue
+        # torch.compile returns OptimizedModule; the original module is at _orig_mod.
+        if hasattr(model, "_orig_mod"):
+            model = model._orig_mod
+            continue
+        break
     return model

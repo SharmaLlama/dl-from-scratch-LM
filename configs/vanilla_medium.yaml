@@ -2,7 +2,7 @@
 model:
   attention_type: vanilla
   pe_type: sinusoidal
-  n_layers: 12
+  n_layers: 16
   n_heads: 8
   d_model: 512
   d_ff: 1024
@@ -15,7 +15,7 @@ model:
 
 training:
   max_tokens: 1_000_000_000 # 1B tokens
-  batch_size: 6
+  batch_size: 8
   lr: 3.0e-4
   warmup_steps: 500
   eval_interval: 10_000_000     # eval every 10M tokens
@@ -23,10 +23,12 @@ training:
   weight_decay: 0.1
   grad_clip: 1.0
   label_smoothing: 0.0
-  seed: 42
+  seed: 42 
   max_eval_tokens: 5_000_000
-  grad_accum_steps: 24
+  grad_accum_steps: 8
   mixed_precision: true
+  compile: false
+
 
 data:
   dataset_path: data/

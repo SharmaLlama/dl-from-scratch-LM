@@ -36,7 +36,10 @@ class BaseMultiHeadAttention(nn.Module, ABC):
         self.w_o = nn.Linear(n_heads * dv, d_model, bias=False)
         self.dropout = nn.Dropout(dropout)
 
-        # Populated during forward; read by AttentionHookManager
+        # Populated during forward only when _capture is True (set by AttentionHookManager).
+        # Default False so training never holds references to attn matrices / Q / K, which
+        # would otherwise pin (B, H, N, N) tensors in VRAM across the whole training loop.
+        self._capture: bool = False
         self.attention_scores: Optional[torch.Tensor] = None
         self.queries: Optional[torch.Tensor] = None
         self.keys: Optional[torch.Tensor] = None
@@ -108,11 +111,13 @@ class BaseMultiHeadAttention(nn.Module, ABC):
 
         Q, K, V = self._apply_position_bias(Q, K, V)
 
-        output, attn_weights = self.attention_pattern(Q, K, V, mask, return_attention)
+        need_attn = return_attention or self._capture
+        output, attn_weights = self.attention_pattern(Q, K, V, mask, need_attn)
 
-        self.attention_scores = attn_weights
-        self.queries = Q
-        self.keys = K
+        if self._capture:
+            self.attention_scores = attn_weights
+            self.queries = Q
+            self.keys = K
 
         output = self.w_o(self._merge_heads(output))
 

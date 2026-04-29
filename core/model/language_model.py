@@ -15,11 +15,13 @@ class LanguageModel(nn.Module):
         embedding: BasePositionalEncoding,
         decoder: Decoder,
         projection: Projection,
+        tie_weights: bool = True,
     ) -> None:
         super().__init__()
         self.embedding = embedding
         self.decoder = decoder
         self.projection = projection
+        self._tie_weights = tie_weights
 
     def forward(
         self,
@@ -70,6 +72,11 @@ class LanguageModel(nn.Module):
                     nn.init.zeros_(module.bias)
             elif isinstance(module, nn.Embedding):
                 nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
+        # Tie input embedding ↔ output projection AFTER init so the embedding's
+        # normal_ init (not the linear's xavier) is what's used for both.
+        if self._tie_weights:
+            self.projection.proj.weight = self.embedding.token_embedding.weight
 
     @staticmethod
     def _causal_mask(seq_len: int, device: torch.device) -> torch.Tensor:

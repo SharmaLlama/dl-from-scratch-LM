@@ -27,6 +27,10 @@ logger = logging.getLogger(__name__)
 import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
+torch.set_float32_matmul_precision("high")
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, help="Path to experiment YAML config")
@@ -60,6 +64,9 @@ def main() -> None:
 
     # ── Model ─────────────────────────────────────────────────────────────────
     model = build_model(cfg).to(device)
+    if cfg.training.compile:
+        logger.info("Compiling model with torch.compile (first step will be slow)...")
+        model = torch.compile(model)
     if torch.cuda.device_count() > 1:
         logger.info(f"Using DataParallel on {torch.cuda.device_count()} GPUs")
         model = nn.DataParallel(model)

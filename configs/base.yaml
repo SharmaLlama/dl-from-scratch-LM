@@ -27,6 +27,7 @@ training:
   label_smoothing: 0.1
   seed: 42
   grad_accum_steps: 4
+  compile: true
   mixed_precision: true
 
 data:

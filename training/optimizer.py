@@ -11,14 +11,21 @@ from training.configs.schemas import TrainingConfig
 def get_optimizer(model: nn.Module, cfg: TrainingConfig) -> AdamW:
     # Exclude biases and LayerNorm params from weight decay
     decay, no_decay = [], []
+    seen: set[int] = set()  # dedupe tied params (e.g. embedding ↔ output projection)
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
+        if id(param) in seen:
+            continue
+        seen.add(id(param))
         if param.ndim <= 1 or name.endswith(".bias"):
             no_decay.append(param)
         else:
             decay.append(param)
 
+    # fused=True dispatches AdamW to a single fused CUDA kernel — much less
+    # launch overhead per step than the foreach (default) path.
+    fused = torch.cuda.is_available()
     return AdamW(
         [
             {"params": decay, "weight_decay": cfg.weight_decay},
@@ -27,6 +34,7 @@ def get_optimizer(model: nn.Module, cfg: TrainingConfig) -> AdamW:
         lr=cfg.lr,
         betas=(0.9, 0.95),
         eps=1e-8,
+        fused=fused,
     )
 
 

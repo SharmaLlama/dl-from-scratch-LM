@@ -1,4 +1,5 @@
 import time
+from contextlib import nullcontext
 from typing import Optional
 
 import torch
@@ -97,21 +98,34 @@ class Trainer:
             if self.tokens_seen >= self.cfg.max_tokens:
                 break
 
-            x, y = x.to(self.device), y.to(self.device)
+            x, y = x.to(self.device, non_blocking=True), y.to(self.device, non_blocking=True)
             tokens_this_batch = x.numel()
             mask = self._causal_mask(x.shape[1], x.shape[0])
 
             # ── forward + backward (micro-batch) ──────────────────────────────
-            with torch.autocast(device_type=self.device.type, enabled=self.cfg.mixed_precision):
-                logits = self.model(x, mask)
-                loss = self.loss_fn(logits.view(-1, logits.size(-1)), y.view(-1))
-                loss = loss / self.cfg.grad_accum_steps
+            # Skip DDP all-reduce on every micro-batch except the last in the
+            # accumulation window. Saves (grad_accum_steps - 1) all-reduces per
+            # optimizer step — large win on multi-GPU setups.
+            is_last_microbatch = (self._accum_step + 1) % self.cfg.grad_accum_steps == 0
+            if self.world_size > 1 and not is_last_microbatch and hasattr(self.model, "no_sync"):
+                sync_ctx = self.model.no_sync()
+            else:
+                sync_ctx = nullcontext()
 
-            self.scaler.scale(loss).backward()
+            with sync_ctx:
+                with torch.autocast(device_type=self.device.type, enabled=self.cfg.mixed_precision):
+                    logits = self.model(x, mask)
+                    loss = self.loss_fn(logits.view(-1, logits.size(-1)), y.view(-1))
+                    loss = loss / self.cfg.grad_accum_steps
+
+                self.scaler.scale(loss).backward()
             self._accum_step += 1
 
-            # Accumulate timing for every micro-batch (optimizer step or not).
-            torch.cuda.synchronize()
+            # CPU-side wall time. We deliberately do NOT torch.cuda.synchronize() per
+            # micro-batch — that serialises the GPU queue and kills overlap with the
+            # dataloader / next forward. GradScaler.unscale_ + .step() in the optimizer
+            # branch below sync implicitly, so over a window of many micro-batches the
+            # CPU clock tracks GPU progress closely enough for tok/s and MFU averages.
             step_time = time.perf_counter() - t_step
             self._accum_time += step_time
             self._accum_tokens += tokens_this_batch
