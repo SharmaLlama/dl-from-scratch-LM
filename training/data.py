@@ -234,6 +234,10 @@ def get_dataloaders(
         batch_size=batch_size,
         num_workers=0,   # avoids worker-state issues on repeated early-terminated iterations
         pin_memory=True,
-        drop_last=False,
+        # drop_last=True so torch.compile doesn't re-specialize on a smaller final
+        # batch (the recompilation spike has caused OOMs late in training).
+        # We're capped by max_eval_tokens anyway, so dropping a final partial batch
+        # changes the val token count by <1%.
+        drop_last=True,
     )
     return train_loader, val_loader

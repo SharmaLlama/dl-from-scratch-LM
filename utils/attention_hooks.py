@@ -14,13 +14,15 @@ class AttentionHookManager:
     Usage:
         with AttentionHookManager(model) as hooks:
             _ = model(x, mask)
-        attn = hooks.get_attention_weights()  # (n_layers, B, H, N, N)
+        attn = hooks.get_attention_weights()  # (n_layers, batch_slice, H, N, N)
 
-    Captures are stored on the manager (not on layer attributes), so the
-    underlying layers never pin (B, H, N, N) tensors during normal training.
+    By default we only keep the first `batch_slice` entries along the batch dim
+    and immediately offload to CPU. The full (B, H, N, N) tensor across L layers
+    is huge (multi-GB at production batch sizes) and downstream consumers only
+    ever look at the first batch element, so capturing all of it would OOM.
     """
 
-    def __init__(self, model: nn.Module) -> None:
+    def __init__(self, model: nn.Module, batch_slice: int = 1) -> None:
         self._layers: list[BaseMultiHeadAttention] = [
             m for m in model.modules() if isinstance(m, BaseMultiHeadAttention)
         ]
@@ -28,6 +30,7 @@ class AttentionHookManager:
         self._attn: list[Optional[torch.Tensor]] = [None] * len(self._layers)
         self._q: list[Optional[torch.Tensor]] = [None] * len(self._layers)
         self._k: list[Optional[torch.Tensor]] = [None] * len(self._layers)
+        self._batch_slice = batch_slice
 
     def __enter__(self) -> "AttentionHookManager":
         # Reset captures — fresh state per context entry.
@@ -36,14 +39,25 @@ class AttentionHookManager:
         self._q = [None] * n
         self._k = [None] * n
 
+        bs = self._batch_slice
+
         def make_hook(idx: int):
             def hook(module: BaseMultiHeadAttention, _inp, _out):
+                # Slice along batch BEFORE the device transfer so we don't ship
+                # the full (B, H, N, N) tensor across PCIe. .to("cpu", non_blocking=True)
+                # creates an independent CPU copy, removing all VRAM pressure.
                 if module.attention_scores is not None:
-                    self._attn[idx] = module.attention_scores.detach().clone()
+                    self._attn[idx] = module.attention_scores[:bs].detach().to(
+                        "cpu", non_blocking=True
+                    )
                 if module.queries is not None:
-                    self._q[idx] = module.queries.detach().clone()
+                    self._q[idx] = module.queries[:bs].detach().to(
+                        "cpu", non_blocking=True
+                    )
                 if module.keys is not None:
-                    self._k[idx] = module.keys.detach().clone()
+                    self._k[idx] = module.keys[:bs].detach().to(
+                        "cpu", non_blocking=True
+                    )
                 # Drop refs on the layer immediately; manager already holds the snapshot.
                 module.attention_scores = None
                 module.queries = None

@@ -83,6 +83,23 @@ class Trainer:
         self._shared_tracker = MetricsTracker(_SHARED_KEYS)
         self._hw_tracker = MetricsTracker(_HW_KEYS)
 
+    def restore_progress(self, state: dict) -> None:
+        """
+        Restore training progress (tokens_seen, global_step, eval/ckpt fences) from
+        a checkpoint dict returned by CheckpointManager.load(). Model/optimizer/
+        scheduler weights are restored separately by the checkpoint manager.
+        """
+        self.global_step = int(state.get("epoch", 0))
+        self.tokens_seen = int(state.get("metrics", {}).get("tokens_seen", 0))
+
+        # Snap the next-eval / next-ckpt fences onto the next interval boundary
+        # past wherever we resumed. Avoids firing eval immediately on restart and
+        # keeps boundaries aligned with what a from-scratch run would hit.
+        eval_iv = self.cfg.eval_interval
+        ckpt_iv = self.cfg.checkpoint_interval
+        self._next_eval = ((self.tokens_seen // eval_iv) + 1) * eval_iv
+        self._next_ckpt = ((self.tokens_seen // ckpt_iv) + 1) * ckpt_iv
+
     def fit(self) -> None:
         """
         Train until the token budget (cfg.max_tokens) is exhausted.
@@ -259,6 +276,12 @@ class Trainer:
         total_loss   = 0.0
         total_tokens = 0
 
+        # Release fragmented reserved blocks before the heavy eval allocations.
+        # Cheap relative to a 10M-token eval, and avoids the case where a (B*N, vocab)
+        # logits tensor (~1+ GB) can't find a contiguous slot late in training.
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
+
         log_attn       = (self.global_step % self.logger.log_attention_every == 0)
         attn_weights_np = None
         hook_manager   = AttentionHookManager(self.model)
@@ -268,20 +291,28 @@ class Trainer:
             if eval_tokens_seen >= self.cfg.max_eval_tokens:
                 break
 
-            x, y = x.to(self.device), y.to(self.device)
+            x, y = x.to(self.device, non_blocking=True), y.to(self.device, non_blocking=True)
             eval_tokens_seen += x.numel()
             mask = self._causal_mask(x.shape[1], x.shape[0])
 
-            if log_attn and batch_idx == 0:
-                with hook_manager:
+            # Same autocast policy as training — keeps logits in bf16 (~half the
+            # memory of fp32) and reuses the kernels Inductor already compiled.
+            with torch.autocast(
+                device_type=self.device.type,
+                dtype=self._amp_dtype,
+                enabled=self.cfg.mixed_precision,
+            ):
+                if log_attn and batch_idx == 0:
+                    with hook_manager:
+                        logits = self.model(x, mask)
+                    captured = hook_manager.get_attention_weights()
+                    if captured is not None:
+                        attn_weights_np = captured[:, :1].cpu().numpy()
+                else:
                     logits = self.model(x, mask)
-                captured = hook_manager.get_attention_weights()
-                if captured is not None:
-                    attn_weights_np = captured[:, :1].cpu().numpy()
-            else:
-                logits = self.model(x, mask)
 
-            loss          = self.loss_fn(logits.view(-1, logits.size(-1)), y.view(-1))
+                loss = self.loss_fn(logits.view(-1, logits.size(-1)), y.view(-1))
+
             total_tokens += y.numel()
             total_loss   += loss.item() * y.numel()
 

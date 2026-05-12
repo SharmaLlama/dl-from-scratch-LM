@@ -31,6 +31,8 @@ torch.set_float32_matmul_precision("high")
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
+torch._dynamo.config.cache_size_limit = 16
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, help="Path to experiment YAML config")
@@ -87,8 +89,12 @@ def main() -> None:
     checkpointer = CheckpointManager("experiments", cfg)
     logger.info(f"Checkpointing to {checkpointer.dir}")
 
+    resume_state = None
     if args.resume:
-        checkpointer.load(args.resume, model, optimizer, scheduler, device)
+        resume_state = checkpointer.load(args.resume, model, optimizer, scheduler, device)
+        resumed_tokens = resume_state.get("metrics", {}).get("tokens_seen", 0)
+        resumed_step = resume_state.get("epoch", 0)
+        logger.info(f"Resumed from {args.resume}: step={resumed_step}, tokens_seen={resumed_tokens:,}")
 
     # ── Train ─────────────────────────────────────────────────────────────────
     trainer = Trainer(
@@ -96,6 +102,8 @@ def main() -> None:
         train_loader, val_loader,
         cfg.training, logger_obj, checkpointer, device,
     )
+    if resume_state is not None:
+        trainer.restore_progress(resume_state)
     trainer.fit()
 
 

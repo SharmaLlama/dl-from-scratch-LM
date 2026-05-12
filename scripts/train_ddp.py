@@ -34,6 +34,11 @@ torch.set_float32_matmul_precision("high")
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
+# Cap dynamo's recompilation cache. Without this, every new input shape (e.g. a
+# partial eval batch) adds another compiled graph in VRAM, and over a 1B-token run
+# this can grow unboundedly. 16 entries is plenty for one train + one eval shape.
+torch._dynamo.config.cache_size_limit = 16
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -105,8 +110,13 @@ def main() -> None:
     if is_main_process(rank):
         logger.info(f"Checkpointing to {checkpointer.dir}")
 
+    resume_state = None
     if args.resume:
-        checkpointer.load(args.resume, model, optimizer, scheduler, device)
+        resume_state = checkpointer.load(args.resume, model, optimizer, scheduler, device)
+        if is_main_process(rank):
+            resumed_tokens = resume_state.get("metrics", {}).get("tokens_seen", 0)
+            resumed_step = resume_state.get("epoch", 0)
+            logger.info(f"Resumed from {args.resume}: step={resumed_step}, tokens_seen={resumed_tokens:,}")
 
     # ── Train ─────────────────────────────────────────────────────────────────
     trainer = Trainer(
@@ -115,6 +125,8 @@ def main() -> None:
         cfg.training, wandb_logger, checkpointer, device,
         rank=rank, world_size=world_size,
     )
+    if resume_state is not None:
+        trainer.restore_progress(resume_state)
     trainer.fit()
 
     cleanup_ddp()

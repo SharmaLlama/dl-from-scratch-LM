@@ -2,10 +2,10 @@
 model:
   attention_type: vanilla
   pe_type: sinusoidal
-  n_layers: 16
-  n_heads: 8
-  d_model: 512
-  d_ff: 2048
+  n_layers: 20
+  n_heads: 12
+  d_model: 768
+  d_ff: 3072
   vocab_size: 50257
   max_seq_len: 1024
   dropout: 0.0
@@ -16,7 +16,7 @@ model:
 
 training:
   max_tokens: 1_000_000_000 # 1B tokens
-  batch_size: 12
+  batch_size: 8
   lr: 6.0e-4
   warmup_steps: 500
   eval_interval: 10_000_000     # eval every 10M tokens
@@ -26,7 +26,7 @@ training:
   label_smoothing: 0.0
   seed: 42 
   max_eval_tokens: 5_000_000
-  grad_accum_steps: 16
+  grad_accum_steps: 24
   mixed_precision: true
   compile: true
 
@@ -39,8 +39,8 @@ data:
 
 wandb:
   project: dl-from-scratch-lm
-  run_name: vanilla-medium
-  tags: [vanilla, sinusoidal, medium, 1B-tokens]
+  run_name: vanilla-large
+  tags: [vanilla, sinusoidal, large, 1B-tokens]
   log_every_steps: 2
   log_attention_every: 100
   watch_model: false
