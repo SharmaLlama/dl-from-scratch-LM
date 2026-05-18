@@ -14,7 +14,9 @@ from core.model.decoder import Decoder
 from core.model.decoder_block import DecoderBlock
 from core.model.language_model import LanguageModel
 from core.positional_encoding.base import BasePositionalEncoding, LearnedPE, SinusoidalPE
+from papers.rope.positional_encoding import RoPEPositionalEncoding
 from papers.vanilla_attention.attention import VanillaMultiHeadAttention
+from papers.rope.attention import RoPEMultiHeadAttention
 from papers.big_bird.attention import SparseMultiHeadAttention
 from training.configs.schemas import ExperimentConfig
 
@@ -23,7 +25,7 @@ from training.configs.schemas import ExperimentConfig
 
 _ATTENTION_REGISTRY: dict[str, type[BaseMultiHeadAttention]] = {
     "vanilla": VanillaMultiHeadAttention,
-    # "rope":          RoPEMultiHeadAttention,
+    "rope":          RoPEMultiHeadAttention,
     # "alibi":         ALiBiAttention,
     "big_bird":      SparseMultiHeadAttention,
     # "performer":     PerformerAttention,
@@ -34,7 +36,7 @@ _ATTENTION_REGISTRY: dict[str, type[BaseMultiHeadAttention]] = {
 _PE_REGISTRY: dict[str, type[BasePositionalEncoding]] = {
     "sinusoidal": SinusoidalPE,
     "learned": LearnedPE,
-    # "rope":   RoPEPositionalEncoding,   # returns None from _get_position_encoding
+    "rope":   RoPEPositionalEncoding,   # returns None from _get_position_encoding
     # "alibi":  ALiBiPositionalEncoding,  # returns None; bias is in-attention
     # "none":   NoPE,
 }
